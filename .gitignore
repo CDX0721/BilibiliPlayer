@@ -9,3 +9,7 @@ build/
 qemu/
 guest/
 *.log
+data_gui/
+data_test/
+qemu_dl/
+*.png
