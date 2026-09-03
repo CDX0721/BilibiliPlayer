@@ -42,16 +42,28 @@ def _find_edge() -> str | None:
     return None
 
 
+def _copy_locked(src: Path, dst: Path):
+    """Edge 运行中会独占锁定 Cookies 数据库；esentutl 可绕过普通文件锁复制。"""
+    try:
+        shutil.copy2(src, dst)
+    except PermissionError:
+        r = subprocess.run(["esentutl", "/y", str(src), "/d", str(dst), "/o"],
+                           capture_output=True, timeout=60)
+        msg = (r.stderr or r.stdout or b"").decode("gbk", "ignore")
+        if not dst.exists():
+            raise RuntimeError(f"复制 {src.name} 失败: {msg}")
+
+
 def _copy_profile(tmp: Path):
     """只拷解密所需文件，避免整目录 GB 级拷贝。"""
     (tmp / "Default" / "Network").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(EDGE_PROFILE / "Local State", tmp / "Local State")
+    _copy_locked(EDGE_PROFILE / "Local State", tmp / "Local State")
     src_dir = EDGE_PROFILE / "Default" / "Network"
     copied = 0
     for name in ("Cookies", "Cookies-wal", "Cookies-shm"):
         src = src_dir / name
         if src.exists():
-            shutil.copy2(src, tmp / "Default" / "Network" / name)
+            _copy_locked(src, tmp / "Default" / "Network" / name)
             copied += 1
     if not copied:
         raise FileNotFoundError("未找到 Edge Cookies 数据库")
@@ -59,7 +71,7 @@ def _copy_profile(tmp: Path):
 
 def _cdp_get_cookies(edge: str, timeout_s=60) -> list[dict]:
     port = _free_port()
-    with tempfile.TemporaryDirectory(prefix="bp_edge_") as td:
+    with tempfile.TemporaryDirectory(prefix="bp_edge_", ignore_cleanup_errors=True) as td:
         tmp = Path(td)
         _copy_profile(tmp)
         args = [edge, "--headless=new", f"--remote-debugging-port={port}",
@@ -92,19 +104,51 @@ def _cdp_get_cookies(edge: str, timeout_s=60) -> list[dict]:
                     return cookies
             raise RuntimeError("CDP 响应超时")
         finally:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True)
             try:
-                proc.terminate()
                 proc.wait(timeout=10)
             except Exception:
                 proc.kill()
 
 
+def _edge_running() -> bool:
+    r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq msedge.exe"], capture_output=True)
+    return "msedge.exe" in r.stdout.decode("gbk", "ignore")
+
+
+def _close_edge():
+    """优雅关闭 Edge（发 WM_CLOSE 保存会话），必要时强杀。"""
+    subprocess.run(["taskkill", "/IM", "msedge.exe"], capture_output=True)
+    for _ in range(20):
+        if not _edge_running():
+            return
+        time.sleep(0.5)
+    subprocess.run(["taskkill", "/F", "/IM", "msedge.exe"], capture_output=True)
+    time.sleep(2)
+
+
+def _relaunch_edge():
+    subprocess.Popen(["cmd", "/c", "start", "", "msedge.exe", "--restore-last-session"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def extract_bilibili_cookies() -> dict[str, str]:
-    """返回 {name: value}；只记录 Cookie 名，绝不打印值。"""
+    """返回 {name: value}；只记录 Cookie 名，绝不打印值。
+    Edge 正在运行时会先优雅关闭（会话可恢复），提取完自动重启。"""
     edge = _find_edge()
     if not edge:
         raise FileNotFoundError("未找到 msedge.exe")
-    cookies = _cdp_get_cookies(edge)
+    was_running = _edge_running()
+    if was_running:
+        log.info("检测到 Edge 正在运行，先优雅关闭（提取后自动恢复会话）…")
+        _close_edge()
+    try:
+        cookies = _cdp_get_cookies(edge)
+    finally:
+        if was_running:
+            log.info("恢复启动 Edge…")
+            _relaunch_edge()
     out = {}
     for c in cookies:
         d = c.get("domain", "")

@@ -47,7 +47,7 @@ class BiliClient:
                 time.sleep(wait)
             self._last_call = time.time()
 
-    def _get(self, path, params=None, signed=False, retry=2):
+    def _get(self, path, params=None, signed=False, retry=2, ok_codes=()):
         self._throttle()
         params = dict(params or {})
         if signed:
@@ -58,8 +58,8 @@ class BiliClient:
         except Exception:
             raise BiliError(-1, f"HTTP {r.status_code} 非 JSON 响应")
         code = data.get("code", -1)
-        if code == 0:
-            return data["data"]
+        if code == 0 or code in ok_codes:
+            return data.get("data") or {}
         if code in (-412, -352) and retry > 0:
             log.warning("风控 %s，%ds 后重试: %s", code, 5 * (3 - retry), path)
             time.sleep(5 * (3 - retry))
@@ -74,7 +74,7 @@ class BiliClient:
         if cached:
             self._wbi_key = tuple(cached)
             return cached[2]
-        d = self._get("/x/web-interface/nav")
+        d = self._get("/x/web-interface/nav", ok_codes=(-101,))
         img = d["wbi_img"]["img_url"].rsplit("/", 1)[1].split(".")[0]
         sub = d["wbi_img"]["sub_url"].rsplit("/", 1)[1].split(".")[0]
         mk = wbi_mod.get_mixin_key(img, sub)
@@ -84,7 +84,7 @@ class BiliClient:
 
     # ---------- 接口 ----------
     def nav(self):
-        return self._get("/x/web-interface/nav")
+        return self._get("/x/web-interface/nav", ok_codes=(-101,))
 
     def ensure_buvid(self):
         """无 buvid 时申请并写入 Cookie（降低 -412 概率）。"""
@@ -155,9 +155,9 @@ class BiliClient:
             "fourk": 1, "platform": "web"}, signed=True)
         dash = d.get("dash") or {}
         audios = list(dash.get("audio") or [])
-        if dash.get("flac", {}).get("audio"):
+        if (dash.get("flac") or {}).get("audio"):
             audios += dash["flac"]["audio"]
-        if dash.get("dolby", {}).get("audio"):
+        if (dash.get("dolby") or {}).get("audio"):
             audios += dash["dolby"]["audio"]
         out = []
         for a in audios:

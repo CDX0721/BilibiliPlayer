@@ -51,7 +51,7 @@ class _Delay:
         self.maxd = int(MAX_DELAY_S * fs)
         self.buf = np.zeros(self.maxd)
         self.w = 0
-        self.lp_z = 0.0
+        self.lp_z = np.zeros(1)
         self.set_params(time_ms, feedback, mix)
 
     def set_params(self, time_ms, feedback, mix):
@@ -72,7 +72,7 @@ class _Delay:
             didx = (self.w - self.D + np.arange(seg)) % self.maxd
             delayed = self.buf[didx]
             # 反馈回路一阶低通（携带状态）
-            lp, self.lp_z = lfilter([1.0], [1.0, -0.35], delayed, zi=[self.lp_z])
+            lp, self.lp_z = lfilter([1.0], [1.0, -0.35], delayed, zi=self.lp_z)
             u[pos:pos + seg] = mono[pos:pos + seg] + self.fb * lp
             self.buf[idx] = u[pos:pos + seg]
             self.w = int((self.w + seg) % self.maxd)
