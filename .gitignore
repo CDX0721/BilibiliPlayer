@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+!data/.gitkeep
+dist/
+build/
+*.wav
+qemu/
+guest/
+*.log
