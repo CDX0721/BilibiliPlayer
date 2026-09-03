@@ -136,10 +136,8 @@ DEFAULT_SETTINGS = {
 
 
 def get_settings(tid: int) -> dict:
-    rows = _q("SELECT * FROM track_settings WHERE track_id=?", (tid,))
-    s = {k: (v if v is not None else d) for k, d in
-         ((k, DEFAULT_SETTINGS[k]) for k in DEFAULT_SETTINGS)}
     s = dict(DEFAULT_SETTINGS)
+    rows = _q("SELECT * FROM track_settings WHERE track_id=?", (tid,))
     if rows:
         r = dict(rows[0])
         for k in ("gain_db", "speed", "quality"):
