@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
         try:
             self._loading_quality = True
             self.cur_qid = self.svc.play_track(t)
-            self._fill_quality_box(t["bvid"], self.cur_qid)
+            self._fill_quality_box(t["bvid"], t.get("page") or 1, self.cur_qid)
         except Exception as e:
             log.exception("播放失败")
             QMessageBox.warning(self, "播放失败", str(e))
@@ -292,10 +292,10 @@ class MainWindow(QMainWindow):
         row = item.row()
         self._play_index(row)
 
-    def _fill_quality_box(self, bvid, cur_qid):
+    def _fill_quality_box(self, bvid, page, cur_qid):
         self.quality_box.blockSignals(True)
         self.quality_box.clear()
-        for qid, label in self.svc.available_qualities(bvid):
+        for qid, label in self.svc.available_qualities(bvid, page):
             self.quality_box.addItem(label, qid)
             if qid == cur_qid:
                 self.quality_box.setCurrentIndex(self.quality_box.count() - 1)

@@ -20,13 +20,16 @@ CREATE TABLE IF NOT EXISTS playlists(
 );
 CREATE TABLE IF NOT EXISTS tracks(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bvid TEXT UNIQUE,
+  bvid TEXT NOT NULL,
+  page INTEGER NOT NULL DEFAULT 1,         -- 分P页码（1=P1）
+  part TEXT,                               -- 分P标题（view.pages.part）
   cid INTEGER,
   title TEXT,
   upper TEXT,
   duration REAL,
   cover TEXT,
-  added_at REAL
+  added_at REAL,
+  UNIQUE(bvid, page)
 );
 CREATE TABLE IF NOT EXISTS playlist_tracks(
   playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
@@ -58,10 +61,40 @@ def conn() -> sqlite3.Connection:
         if _conn is None:
             _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
             _conn.row_factory = sqlite3.Row
-            _conn.execute("PRAGMA foreign_keys=ON")
             _conn.executescript(SCHEMA)
+            _migrate(_conn)
+            _conn.execute("PRAGMA foreign_keys=ON")
             _conn.commit()
         return _conn
+
+
+def _migrate(c: sqlite3.Connection):
+    """旧库迁移：tracks 增加 page/part 列与 (bvid,page) 唯一键，旧行视为 P1。"""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(tracks)")}
+    if "page" in cols:
+        return
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.executescript("""
+      CREATE TABLE tracks_new(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bvid TEXT NOT NULL,
+        page INTEGER NOT NULL DEFAULT 1,
+        part TEXT,
+        cid INTEGER,
+        title TEXT,
+        upper TEXT,
+        duration REAL,
+        cover TEXT,
+        added_at REAL,
+        UNIQUE(bvid, page)
+      );
+      INSERT INTO tracks_new(id,bvid,page,part,cid,title,upper,duration,cover,added_at)
+        SELECT id,bvid,1,NULL,cid,title,upper,duration,cover,added_at FROM tracks;
+      DROP TABLE tracks;
+      ALTER TABLE tracks_new RENAME TO tracks;
+    """)
+    c.execute("PRAGMA foreign_keys=ON")
+    c.commit()
 
 
 def _ex(sql, args=()):
@@ -104,17 +137,21 @@ def playlist_tracks(pid: int) -> list[dict]:
 
 
 def add_track_to_playlist(pid: int, track: dict) -> int:
-    """track: {bvid, cid, title, upper, duration, cover}。已存在则更新，返回 track_id。"""
-    r = _q("SELECT id FROM tracks WHERE bvid=?", (track["bvid"],))
+    """track: {bvid, page?, cid, title, upper, duration, cover, part?}。
+    以 (bvid, page) 去重，已存在则更新，返回 track_id。"""
+    page = int(track.get("page") or 1)
+    r = _q("SELECT id FROM tracks WHERE bvid=? AND page=?", (track["bvid"], page))
     if r:
         tid = r[0]["id"]
-        _ex("UPDATE tracks SET cid=?,title=?,upper=?,duration=?,cover=? WHERE id=?",
+        _ex("UPDATE tracks SET cid=?,title=?,upper=?,duration=?,cover=?,part=? WHERE id=?",
             (track.get("cid"), track.get("title"), track.get("upper"),
-             track.get("duration"), track.get("cover"), tid))
+             track.get("duration"), track.get("cover"), track.get("part"), tid))
     else:
-        tid = _ex("INSERT INTO tracks(bvid,cid,title,upper,duration,cover,added_at) VALUES(?,?,?,?,?,?,?)",
-                  (track["bvid"], track.get("cid"), track.get("title"), track.get("upper"),
-                   track.get("duration"), track.get("cover"), time.time())).lastrowid
+        tid = _ex("INSERT INTO tracks(bvid,page,part,cid,title,upper,duration,cover,added_at) "
+                  "VALUES(?,?,?,?,?,?,?,?,?)",
+                  (track["bvid"], page, track.get("part"), track.get("cid"),
+                   track.get("title"), track.get("upper"), track.get("duration"),
+                   track.get("cover"), time.time())).lastrowid
     pos = _q("SELECT COALESCE(MAX(position),-1)+1 AS p FROM playlist_tracks WHERE playlist_id=?", (pid,))[0]["p"]
     _ex("INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position) VALUES(?,?,?)", (pid, tid, pos))
     return tid
