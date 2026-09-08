@@ -24,10 +24,14 @@ python -m app.main --wav out.wav   # 输出到 WAV（测试）
 ```
 
 ## 登录
-程序从 `data/cookies.json` 读取 Cookie（SESSDATA/bili_jct/DedeUserID/buvid3…）。
-`python scripts/fetch_cookies.py` 可从本机 Edge 提取（复制配置目录 + 无头 CDP，不动运行中的浏览器）。
-**注意**：本机验证时 Edge 中的 B 站登录态已在服务端失效（打开首页即被清除），
-匿名模式下全部功能可用，仅私有收藏夹与 Hi-Res/杜比音质不可用。
+三种方式（任选其一，Cookie 均存于 `data/cookies.json`）：
+1. **应用内扫码登录**（推荐）：主界面"扫码登录"按钮 → 弹出二维码 → 哔哩哔哩 App 扫码确认即完成，
+   refresh_token 自动保存；QR 过期自动刷新，全程无需浏览器
+2. **从 Edge 提取**：`python scripts/fetch_cookies.py`（复制配置目录 + 无头 CDP，不动运行中的浏览器；
+   注意 Edge 127+ 的 app-bound 加密可能使提取失败）
+3. **手动放置**：把浏览器 Cookie 中的 SESSDATA/bili_jct/DedeUserID/buvid3/buvid4 写入 `data/cookies.json`
+
+**注意**：匿名模式下全部功能可用，仅私有收藏夹与 Hi-Res/杜比音质需要登录。
 
 ## 测试
 ```powershell

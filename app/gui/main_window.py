@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from .. import config, db
 from .bridge import EngineBridge
+from .login_dialog import LoginDialog
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ class MainWindow(QMainWindow):
         left.addWidget(self.pl_list, 1)
         row = QHBoxLayout()
         for text, slot in [("新建歌单", self._new_playlist), ("删除", self._del_playlist),
-                           ("导入收藏夹", self._import_fav), ("刷新", self._refresh_pl)]:
+                           ("导入收藏夹", self._import_fav), ("刷新", self._refresh_pl),
+                           ("扫码登录", self._qr_login)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
@@ -341,6 +343,19 @@ class MainWindow(QMainWindow):
             self.table.setItem(i, 2, QTableWidgetItem(t.get("upper") or ""))
             self.table.setItem(i, 3, QTableWidgetItem(fmt_t(t.get("duration") or 0)))
         self.cur_index = -1
+
+    def _qr_login(self):
+        dlg = LoginDialog(self)
+        if dlg.exec():
+            self.svc.logged_in = bool(self.svc.client.load_cookies())
+            try:
+                self.svc.client.ensure_buvid()
+            except Exception:
+                pass
+            if self.svc.logged_in:
+                self.statusBar().showMessage("登录成功，Cookie 已保存（私有收藏夹与高音质已解锁）", 8000)
+            else:
+                self.statusBar().showMessage("登录未完成：Cookie 保存失败", 8000)
 
     def _new_playlist(self):
         name, ok = QInputDialog.getText(self, "新建歌单", "歌单名：")
