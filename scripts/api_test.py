@@ -3,6 +3,7 @@ buvid 获取 → nav → 通过 mid 匿名读公开收藏夹 → fav list → vi
 输出 data/api_test_capture.wav，宿主机不出声。
 """
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,8 @@ import numpy as np
 
 from app.bilibili.client import BiliClient, BiliError
 
-MID = 0  # 来自 Edge 中 bp_t_offset_<mid> Cookie（匿名可查公开收藏夹）
+# 匿名读取公开收藏夹需要目标 mid；运行时用环境变量 BP_TEST_MID 提供自己的用户 ID
+MID = int(os.environ.get("BP_TEST_MID", "0"))
 
 
 def rms(x):
@@ -30,6 +32,9 @@ def main():
     print(f"[2] nav: isLogin={nav.get('isLogin')}（预期 False，匿名模式）")
 
     try:
+        if not MID:
+            print("[3] 未设置 BP_TEST_MID（自己的 bilibili 用户 ID），跳过收藏夹实测")
+            return
         d = c._get("/x/v3/fav/folder/created/list-all", {"up_mid": MID, "type": 2})
         folders = [{"media_id": f["id"], "title": f["title"], "media_count": f["media_count"]}
                    for f in (d.get("list") or []) if not f.get("attr", 0) & 1]

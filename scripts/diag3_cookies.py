@@ -13,7 +13,7 @@ import requests
 import websocket
 
 edge = ee._find_edge()
-REAL = Path(r"C:\Users\user\AppData\Local\Microsoft\Edge\User Data")
+REAL = Path.home() / "AppData/Local/Microsoft/Edge/User Data"
 
 was = ee._edge_running()
 if was:

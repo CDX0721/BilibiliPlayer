@@ -84,7 +84,11 @@ def test_expand_offline():
 
 
 def _folders(client):
-    d = client._get("/x/v3/fav/folder/created/list-all", {"up_mid": 0, "type": 2})
+    import os
+    mid = int(os.environ.get("BP_TEST_MID", "0"))
+    if not mid:
+        return []
+    d = client._get("/x/v3/fav/folder/created/list-all", {"up_mid": mid, "type": 2})
     return [{"media_id": x["id"], "title": x["title"]} for x in (d.get("list") or [])
             if not x.get("attr", 0) & 1]
 
