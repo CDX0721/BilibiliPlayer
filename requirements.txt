@@ -7,3 +7,4 @@ websocket-client>=1.7
 imageio-ffmpeg>=0.5
 pycdlib>=1.13
 qrcode>=7.4
+pycryptodome>=3.19

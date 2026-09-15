@@ -2,6 +2,7 @@
 import logging
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
     QComboBox, QDockWidget, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSlider, QSpinBox,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
 from .. import config, db
 from .bridge import EngineBridge
 from .login_dialog import LoginDialog
+from .ne_login_dialog import NeLoginDialog
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +76,9 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         for text, slot in [("新建歌单", self._new_playlist), ("删除", self._del_playlist),
                            ("导入收藏夹", self._import_fav), ("刷新", self._refresh_pl),
-                           ("扫码登录", self._qr_login)]:
+                           ("扫码登录", self._qr_login), ("网易云登录", self._ne_login),
+                           ("导入网易云", self._import_ne), ("导入NCM", self._import_ncm),
+                           ("起别名", self._set_alias)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
@@ -192,8 +196,7 @@ class MainWindow(QMainWindow):
             s.valueChanged.connect(self._on_effect_live)
 
         # ---- 状态栏 ----
-        login = "已登录" if self.svc.logged_in else "未登录（仅低音质）"
-        self.statusBar().showMessage(f"登录状态: {login} | 数据目录: {config.DATA_DIR}")
+        self._update_status()
 
     # ================= 引擎桥接 =================
     def _wire_engine(self):
@@ -276,7 +279,8 @@ class MainWindow(QMainWindow):
         try:
             self._loading_quality = True
             self.cur_qid = self.svc.play_track(t)
-            self._fill_quality_box(t["bvid"], t.get("page") or 1, self.cur_qid)
+            self._fill_quality_box(t["bvid"], t.get("page") or 1, self.cur_qid,
+                                   t.get("source") or "bili")
         except Exception as e:
             log.exception("播放失败")
             QMessageBox.warning(self, "播放失败", str(e))
@@ -292,10 +296,10 @@ class MainWindow(QMainWindow):
         row = item.row()
         self._play_index(row)
 
-    def _fill_quality_box(self, bvid, page, cur_qid):
+    def _fill_quality_box(self, bvid, page, cur_qid, source="bili"):
         self.quality_box.blockSignals(True)
         self.quality_box.clear()
-        for qid, label in self.svc.available_qualities(bvid, page):
+        for qid, label in self.svc.available_qualities(bvid, page, source):
             self.quality_box.addItem(label, qid)
             if qid == cur_qid:
                 self.quality_box.setCurrentIndex(self.quality_box.count() - 1)
@@ -339,10 +343,94 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(len(self.tracks))
         for i, t in enumerate(self.tracks):
             self.table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            self.table.setItem(i, 1, QTableWidgetItem(t.get("title") or t["bvid"]))
+            disp = t.get("alias") or t.get("title") or t["bvid"]
+            if t.get("note"):
+                disp += f" [{t['note']}]"
+            item_title = QTableWidgetItem(disp)
+            item_title.setToolTip(t.get("title") or disp)
+            if not t.get("accessible", 1):
+                item_title.setForeground(QBrush(Qt.gray))
+            self.table.setItem(i, 1, item_title)
             self.table.setItem(i, 2, QTableWidgetItem(t.get("upper") or ""))
             self.table.setItem(i, 3, QTableWidgetItem(fmt_t(t.get("duration") or 0)))
         self.cur_index = -1
+
+    def _update_status(self):
+        bili = "已登录" if self.svc.logged_in else "未登录"
+        self.statusBar().showMessage(
+            f"b站: {bili} | {self.svc.ne_status_text()} | 数据目录: {config.DATA_DIR}")
+
+    def _ne_login(self):
+        dlg = NeLoginDialog(self.svc, self)
+        if dlg.exec():
+            self._update_status()
+            self.statusBar().showMessage("网易云登录成功: " + self.svc.ne_status_text(), 8000)
+
+    def _import_ne(self):
+        if not self.svc.ne_logged_in:
+            QMessageBox.information(self, "导入网易云", "请先点击「网易云登录」扫码登录。")
+            return
+        try:
+            opts = self.svc.ne_import_options()["items"]
+        except Exception as e:
+            QMessageBox.warning(self, "导入网易云失败", str(e))
+            return
+        if not opts:
+            QMessageBox.information(self, "导入网易云", "没有可导入的歌单/播客")
+            return
+        labels = [("[歌单] " if o["kind"] == "pl" else "[播客] ") + f"{o['name']} ({o['count']})"
+                  for o in opts]
+        name, ok = QInputDialog.getItem(self, "导入网易云", "选择歌单或播客：", labels, 0, False)
+        if not ok:
+            return
+        opt = opts[labels.index(name)]
+        self.statusBar().showMessage("正在导入（限速中，数量多时需等待）…")
+        try:
+            pids = self.svc.import_ne_items([opt])
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+            self._update_status()
+            return
+        self._reload_playlists()
+        for i in range(self.pl_list.count()):
+            if self.pl_list.item(i).data(Qt.UserRole) == pids[0]:
+                self.pl_list.setCurrentRow(i)
+                self._on_pl_selected(self.pl_list.item(i))
+        self._update_status()
+
+    def _import_ncm(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择 NCM 文件", "", "NCM (*.ncm)")
+        if not paths:
+            return
+        pid = self.current_pid
+        if pid is None:
+            pid = db.create_playlist("NCM导入")
+        res = self.svc.import_ncm(paths, pid)
+        ok = [r for r in res if r["ok"]]
+        fail = [r for r in res if not r["ok"]]
+        msg = f"成功 {len(ok)}/{len(res)}"
+        if fail:
+            msg += "\n失败:\n" + "\n".join(f"{r['name']}: {r['err']}" for r in fail[:5])
+        QMessageBox.information(self, "导入NCM", msg)
+        self._reload_playlists()
+        for i in range(self.pl_list.count()):
+            if self.pl_list.item(i).data(Qt.UserRole) == pid:
+                self.pl_list.setCurrentRow(i)
+                self._on_pl_selected(self.pl_list.item(i))
+
+    def _set_alias(self):
+        row = self.table.currentRow()
+        if not (0 <= row < len(self.tracks)):
+            QMessageBox.information(self, "起别名", "请先在曲目表中选中一首歌。")
+            return
+        t = self.tracks[row]
+        alias, ok = QInputDialog.getText(self, "起别名",
+                                         f"为「{t.get('title') or t['bvid']}」设置别名（留空清除）：",
+                                         text=t.get("alias") or "")
+        if not ok:
+            return
+        db.save_alias(t["id"], alias.strip() or None)
+        self._on_pl_selected(self.pl_list.currentItem())
 
     def _qr_login(self):
         dlg = LoginDialog(self)

@@ -20,15 +20,19 @@ CREATE TABLE IF NOT EXISTS playlists(
 );
 CREATE TABLE IF NOT EXISTS tracks(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bvid TEXT NOT NULL,
-  page INTEGER NOT NULL DEFAULT 1,         -- 分P页码（1=P1）
-  part TEXT,                               -- 分P标题（view.pages.part）
+  bvid TEXT NOT NULL,                      -- 通用源ID：BV号 / 网易云歌曲ID / 本地文件路径
+  page INTEGER NOT NULL DEFAULT 1,         -- 分P页码（仅bilibili源）
+  part TEXT,                               -- 分P标题（仅bilibili源）
   cid INTEGER,
   title TEXT,
   upper TEXT,
   duration REAL,
   cover TEXT,
   added_at REAL,
+  source TEXT NOT NULL DEFAULT 'bili',     -- bili | ne | local
+  alias TEXT,                              -- 用户起的别名（显示优先）
+  accessible INTEGER NOT NULL DEFAULT 1,   -- 0=灰色不可访问
+  note TEXT,                               -- 不可访问原因：VIP/无版权/数字专辑/低音质
   UNIQUE(bvid, page)
 );
 CREATE TABLE IF NOT EXISTS playlist_tracks(
@@ -69,31 +73,41 @@ def conn() -> sqlite3.Connection:
 
 
 def _migrate(c: sqlite3.Connection):
-    """旧库迁移：tracks 增加 page/part 列与 (bvid,page) 唯一键，旧行视为 P1。"""
+    """旧库迁移：分P列 + 多源列，旧行默认 source='bili'/accessible=1。"""
     cols = {r[1] for r in c.execute("PRAGMA table_info(tracks)")}
-    if "page" in cols:
-        return
-    c.execute("PRAGMA foreign_keys=OFF")
-    c.executescript("""
-      CREATE TABLE tracks_new(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bvid TEXT NOT NULL,
-        page INTEGER NOT NULL DEFAULT 1,
-        part TEXT,
-        cid INTEGER,
-        title TEXT,
-        upper TEXT,
-        duration REAL,
-        cover TEXT,
-        added_at REAL,
-        UNIQUE(bvid, page)
-      );
-      INSERT INTO tracks_new(id,bvid,page,part,cid,title,upper,duration,cover,added_at)
-        SELECT id,bvid,1,NULL,cid,title,upper,duration,cover,added_at FROM tracks;
-      DROP TABLE tracks;
-      ALTER TABLE tracks_new RENAME TO tracks;
-    """)
-    c.execute("PRAGMA foreign_keys=ON")
+    if "page" not in cols:
+        c.execute("PRAGMA foreign_keys=OFF")
+        c.executescript("""
+          CREATE TABLE tracks_new(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bvid TEXT NOT NULL,
+            page INTEGER NOT NULL DEFAULT 1,
+            part TEXT,
+            cid INTEGER,
+            title TEXT,
+            upper TEXT,
+            duration REAL,
+            cover TEXT,
+            added_at REAL,
+            source TEXT NOT NULL DEFAULT 'bili',
+            alias TEXT,
+            accessible INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            UNIQUE(bvid, page)
+          );
+          INSERT INTO tracks_new(id,bvid,page,part,cid,title,upper,duration,cover,added_at)
+            SELECT id,bvid,1,NULL,cid,title,upper,duration,cover,added_at FROM tracks;
+          DROP TABLE tracks;
+          ALTER TABLE tracks_new RENAME TO tracks;
+        """)
+        c.execute("PRAGMA foreign_keys=ON")
+        c.commit()
+    cols = {r[1] for r in c.execute("PRAGMA table_info(tracks)")}
+    adds = {"source": "TEXT NOT NULL DEFAULT 'bili'", "alias": "TEXT",
+            "accessible": "INTEGER NOT NULL DEFAULT 1", "note": "TEXT"}
+    for col, decl in adds.items():
+        if col not in cols:
+            c.execute(f"ALTER TABLE tracks ADD COLUMN {col} {decl}")
     c.commit()
 
 
@@ -137,24 +151,34 @@ def playlist_tracks(pid: int) -> list[dict]:
 
 
 def add_track_to_playlist(pid: int, track: dict) -> int:
-    """track: {bvid, page?, cid, title, upper, duration, cover, part?}。
+    """track: {bvid, page?, cid, title, upper, duration, cover, part?,
+               source?('bili'), alias?, accessible?(1), note?}
     以 (bvid, page) 去重，已存在则更新，返回 track_id。"""
     page = int(track.get("page") or 1)
+    source = track.get("source") or "bili"
     r = _q("SELECT id FROM tracks WHERE bvid=? AND page=?", (track["bvid"], page))
+    fields = dict(title=track.get("title"), upper=track.get("upper"),
+                  duration=track.get("duration"), cover=track.get("cover"),
+                  part=track.get("part"), source=source,
+                  accessible=int(track.get("accessible", 1)), note=track.get("note"))
+    if "alias" in track:
+        fields["alias"] = track.get("alias")
     if r:
         tid = r[0]["id"]
-        _ex("UPDATE tracks SET cid=?,title=?,upper=?,duration=?,cover=?,part=? WHERE id=?",
-            (track.get("cid"), track.get("title"), track.get("upper"),
-             track.get("duration"), track.get("cover"), track.get("part"), tid))
+        sets = ", ".join(f"{k}=?" for k in fields)
+        _ex(f"UPDATE tracks SET {sets} WHERE id=?", (*fields.values(), tid))
     else:
-        tid = _ex("INSERT INTO tracks(bvid,page,part,cid,title,upper,duration,cover,added_at) "
-                  "VALUES(?,?,?,?,?,?,?,?,?)",
-                  (track["bvid"], page, track.get("part"), track.get("cid"),
-                   track.get("title"), track.get("upper"), track.get("duration"),
-                   track.get("cover"), time.time())).lastrowid
+        cols = ["bvid", "page", "cid", "added_at", *fields.keys()]
+        vals = [track["bvid"], page, track.get("cid"), time.time(), *fields.values()]
+        tid = _ex(f"INSERT INTO tracks({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                  tuple(vals)).lastrowid
     pos = _q("SELECT COALESCE(MAX(position),-1)+1 AS p FROM playlist_tracks WHERE playlist_id=?", (pid,))[0]["p"]
     _ex("INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position) VALUES(?,?,?)", (pid, tid, pos))
     return tid
+
+
+def save_alias(tid: int, alias: str | None):
+    _ex("UPDATE tracks SET alias=? WHERE id=?", (alias, tid))
 
 
 def remove_track_from_playlist(pid: int, tid: int):
