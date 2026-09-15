@@ -1,4 +1,9 @@
 param([string]$Out = "F:\Projects\BilibiliPlayer\data\screen.png", [int]$X = -1, [int]$Y = -1, [string]$Click = "", [string]$Key = "")
+Add-Type -TypeDefinition @"
+using System;using System.Runtime.InteropServices;
+public class DPI { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }
+"@
+[DPI]::SetProcessDPIAware() | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
